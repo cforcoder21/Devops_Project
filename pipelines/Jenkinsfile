@@ -1,0 +1,166 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Deployment environment')
+    }
+
+    environment {
+        APP_NAME       = 'devops-project-incident-postmortem'
+        VERSION        = "${env.BUILD_ID}"
+        DOCKER_IMAGE   = "${APP_NAME}:${VERSION}"
+        DOCKER_LATEST  = "${APP_NAME}:latest"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo "Checking out branch: ${params.BRANCH}"
+                git branch: "${params.BRANCH}",
+                    url: 'https://github.com/ayushsinha/devops-project-incident-postmortem.git'
+            }
+        }
+
+        stage('Code Quality') {
+            steps {
+                script {
+                    echo 'Running Pylint static analysis...'
+                    sh '''
+                        pip install pylint --quiet
+                        pylint src/ --fail-under=7.0 || true
+                    '''
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    pytest tests/unit/ -v --tb=short \
+                        --junitxml=test-results/unit-results.xml \
+                        --cov=src --cov-report=xml:coverage.xml \
+                        --cov-report=term-missing
+                '''
+            }
+            post {
+                always {
+                    junit 'test-results/unit-results.xml'
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    pytest tests/integration/ -v --tb=short \
+                        --junitxml=test-results/integration-results.xml || true
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker image: ${DOCKER_IMAGE}"
+                    sh """
+                        docker build \
+                            -f infrastructure/docker/Dockerfile \
+                            -t ${DOCKER_IMAGE} \
+                            -t ${DOCKER_LATEST} .
+                    """
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                script {
+                    echo 'Scanning Docker image for vulnerabilities...'
+                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_IMAGE}"
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            when {
+                expression { params.ENVIRONMENT == 'staging' }
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh """
+                        docker-compose \
+                            -f infrastructure/docker/docker-compose.yml \
+                            -p postmortem_staging up -d
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Production') {
+            when {
+                expression { params.ENVIRONMENT == 'prod' }
+            }
+            steps {
+                input message: 'Approve production deployment?', ok: 'Deploy Now'
+                script {
+                    echo 'Deploying to Kubernetes production cluster...'
+                    sh '''
+                        kubectl apply -f infrastructure/kubernetes/configmap.yaml
+                        kubectl apply -f infrastructure/kubernetes/deployment.yaml
+                        kubectl apply -f infrastructure/kubernetes/service.yaml
+                        kubectl rollout status deployment/postmortem-app --timeout=120s
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline #${env.BUILD_NUMBER} succeeded!"
+            emailext(
+                subject: "✅ Pipeline Passed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                    <p>Build <b>${env.BUILD_NUMBER}</b> passed successfully.</p>
+                    <p>Branch: ${params.BRANCH}</p>
+                    <p>Environment: ${params.ENVIRONMENT}</p>
+                    <p><a href="${env.BUILD_URL}">View Build</a></p>
+                """,
+                to: 'ayush.sinha@example.com',
+                mimeType: 'text/html'
+            )
+        }
+        failure {
+            echo "Pipeline #${env.BUILD_NUMBER} FAILED!"
+            emailext(
+                subject: "❌ Pipeline Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                    <p>Build <b>${env.BUILD_NUMBER}</b> has failed.</p>
+                    <p>Branch: ${params.BRANCH}</p>
+                    <p>Please check the logs: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                """,
+                to: 'ayush.sinha@example.com',
+                mimeType: 'text/html'
+            )
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

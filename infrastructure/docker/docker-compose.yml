@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile
+    image: devops-project-incident-postmortem:latest
+    container_name: postmortem_app
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://devopsuser:devopspass@db:5432/postmortemdb
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./deliverables:/app/deliverables
+    restart: unless-stopped
+    networks:
+      - postmortem_net
+
+  db:
+    image: postgres:15-alpine
+    container_name: postmortem_db
+    environment:
+      - POSTGRES_DB=postmortemdb
+      - POSTGRES_USER=devopsuser
+      - POSTGRES_PASSWORD=devopspass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devopsuser -d postmortemdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - postmortem_net
+
+  monitoring:
+    image: nagios/nagios:latest
+    container_name: postmortem_nagios
+    ports:
+      - "8081:80"
+    volumes:
+      - ../../monitoring/nagios:/opt/nagios/etc/conf.d
+    restart: unless-stopped
+    networks:
+      - postmortem_net
+
+volumes:
+  postgres_data:
+
+networks:
+  postmortem_net:
+    driver: bridge

@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postmortem-app
+  labels:
+    app: postmortem-app
+    version: "1.0.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: postmortem-app
+  template:
+    metadata:
+      labels:
+        app: postmortem-app
+    spec:
+      containers:
+        - name: postmortem-app
+          image: devops-project-incident-postmortem:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: postmortem-config
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postmortem-secrets
+                  key: secret-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postmortem-secrets
+                  key: database-url
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
